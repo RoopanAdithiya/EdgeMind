@@ -2,9 +2,22 @@
 EdgeMind backend - FastAPI app.
 
 Exposes the pipeline (parser -> constraint extractor -> boundary
-generator) over HTTP. The AI reasoning stage is stubbed for now
-(returns an empty list) so the app is fully runnable and demoable
-without any external API key -- we'll wire in the real AI call next.
+generator -> AI reasoner -> execution engine -> validator) over HTTP.
+
+The AI reasoning stage calls Gemini (app/analyzer/ai_reasoner.py) and
+fails gracefully: if GEMINI_API_KEY is missing or the call errors out,
+that function's result just has zero "AI" cases -- Boundary Rule cases
+are never affected.
+
+The execution engine (app/analyzer/execution_engine.py) then runs the
+real function against every generated case (Boundary Rule + AI) and
+fills in what actually happened -- return value, raised exception, or
+timeout.
+
+The validator (app/analyzer/validator.py) is a deterministic, rule-based
+check (NOT another LLM call) that cross-checks each AI case's own
+category claim against its value and the execution result, flagging
+(not removing) cases where the claim doesn't hold up.
 
 Analyzes EVERY top-level function in the submitted code, not just the
 first one -- this is what makes it usable on a real uploaded file
@@ -18,8 +31,11 @@ from pydantic import BaseModel
 from app.analyzer.parser import parse_all_functions, parsed_function_to_dict, ParseError
 from app.analyzer.constraint_extractor import extract_constraints, constraint_to_dict
 from app.analyzer.boundary_generator import generate_all_boundary_cases, test_case_to_dict
+from app.analyzer.ai_reasoner import generate_ai_cases
+from app.analyzer.execution_engine import execute_test_cases
+from app.analyzer.validator import validate_test_cases
 
-app = FastAPI(title="EdgeMind API", version="0.2.0")
+app = FastAPI(title="EdgeMind API", version="0.5.0")
 
 # Wide open for local dev; tighten this before deploying anywhere real.
 app.add_middleware(
@@ -65,15 +81,21 @@ def analyze(req: AnalyzeRequest):
         constraints = extract_constraints(parsed)
         cases_by_var = generate_all_boundary_cases(constraints)
 
-        flat_cases = []
+        boundary_cases = []
         for var_cases in cases_by_var.values():
-            flat_cases.extend(test_case_to_dict(tc) for tc in var_cases)
+            boundary_cases.extend(var_cases)
+
+        ai_cases = generate_ai_cases(parsed, constraints, boundary_cases)
+
+        all_cases = boundary_cases + ai_cases
+        execute_test_cases(parsed, constraints, all_cases)
+        validate_test_cases(all_cases)
 
         results.append(
             FunctionResult(
                 function=parsed_function_to_dict(parsed),
                 constraints=[constraint_to_dict(c) for c in constraints],
-                test_cases=flat_cases,
+                test_cases=[test_case_to_dict(tc) for tc in all_cases],
             )
         )
 

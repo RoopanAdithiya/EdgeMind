@@ -7,6 +7,9 @@ structure using the built-in `ast` module:
     - parameters (with defaults/annotations if present)
     - conditions (comparisons found in if/while statements)
     - return values
+    - raw_source: the function's own source text, needed by the
+      Execution Engine (stage 5) to actually run it against generated
+      inputs
 
 This output is intentionally "dumb" and mechanical -- no interpretation
 or judgement happens here. That's the job of the next stage
@@ -59,6 +62,11 @@ class ParsedFunction:
     returns: list[ReturnValue] = field(default_factory=list)
     has_loops: bool = False
     raises: list[str] = field(default_factory=list)
+    # The function's own source text (def ... : ... body), reconstructed
+    # via ast.get_source_segment. Used by the Execution Engine to compile
+    # and actually call the function. Not sent to the frontend -- internal
+    # to the backend pipeline.
+    raw_source: str = ""
 
 
 class ParseError(Exception):
@@ -180,9 +188,10 @@ def _extract_conditions_from_test(test: ast.AST) -> list[Condition]:
     return conditions
 
 
-def _build_parsed_function(func_node) -> ParsedFunction:
+def _build_parsed_function(func_node, source_code: str) -> ParsedFunction:
     """Extract structure from a single ast.FunctionDef/AsyncFunctionDef node."""
     parsed = ParsedFunction(name=func_node.name)
+    parsed.raw_source = ast.get_source_segment(source_code, func_node) or _unparse(func_node)
 
     # --- Parameters ---
     args = func_node.args
@@ -244,7 +253,7 @@ def parse_all_functions(source_code: str) -> list[ParsedFunction]:
     if not func_nodes:
         raise ParseError("No top-level function definitions found in the provided code.")
 
-    return [_build_parsed_function(node) for node in func_nodes]
+    return [_build_parsed_function(node, source_code) for node in func_nodes]
 
 
 def parse_function(source_code: str) -> ParsedFunction:
@@ -258,7 +267,9 @@ def parse_function(source_code: str) -> ParsedFunction:
 
 
 def parsed_function_to_dict(parsed: ParsedFunction) -> dict:
-    """Convert ParsedFunction into a plain dict, ready for JSON / next pipeline stage."""
+    """Convert ParsedFunction into a plain dict, ready for JSON / next pipeline stage.
+    Note: raw_source is intentionally NOT included -- it's internal to the
+    backend pipeline (used by the Execution Engine), not sent to the frontend."""
     return {
         "name": parsed.name,
         "parameters": [

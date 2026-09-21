@@ -12,10 +12,19 @@ huge numbers) -- never to replace this deterministic layer.
 
 Every generated case is tagged source="Boundary Rule" so the UI/exporter
 can always show the user "this came from deterministic logic, not AI".
+
+TestCase also carries:
+  - execution_* fields (stage 5, Execution Engine): what actually
+    happened when the function was run with this input.
+  - validated / validation_note (stage 6, Validator): whether the AI's
+    own category claim held up under a rule-based check. Always
+    validated=True for Boundary Rule cases (deterministic, nothing to
+    check).
+Both default to their "not yet run" state until their stage fills them in.
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from app.analyzer.constraint_extractor import Constraint
 
@@ -24,9 +33,19 @@ from app.analyzer.constraint_extractor import Constraint
 class TestCase:
     variable: str
     value: Any
-    category: str      # e.g. "Boundary Below", "Boundary", "Boundary Above"
-    reason: str         # human-readable explanation
+    category: str       # e.g. "Boundary Below", "Boundary", "Boundary Above"
+    reason: str          # human-readable explanation
     source: str = "Boundary Rule"  # "Boundary Rule" or "AI" (set later by AI stage)
+
+    # --- filled in later by the Execution Engine (stage 5) ---
+    execution_status: str = "not_run"   # "not_run" | "success" | "raises" | "timeout" | "error"
+    actual_output: Any = None
+    exception_type: Optional[str] = None
+    exception_message: Optional[str] = None
+
+    # --- filled in later by the Validator (stage 6) ---
+    validated: bool = True
+    validation_note: Optional[str] = None
 
 
 def _length_input(length: int, fill_char: str = "a") -> str:
@@ -117,4 +136,10 @@ def test_case_to_dict(tc: TestCase) -> dict:
         "category": tc.category,
         "reason": tc.reason,
         "source": tc.source,
+        "execution_status": tc.execution_status,
+        "actual_output": tc.actual_output,
+        "exception_type": tc.exception_type,
+        "exception_message": tc.exception_message,
+        "validated": tc.validated,
+        "validation_note": tc.validation_note,
     }
